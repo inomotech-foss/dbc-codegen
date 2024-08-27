@@ -1,22 +1,24 @@
 #![allow(clippy::float_cmp)]
 
 use can_messages::{
-    Amet, Bar, BarThree, CanError, Foo, LargerIntsWithOffsets, MultiplexTest,
-    MultiplexTestMultiplexorIndex, MultiplexTestMultiplexorM0,
+    Amet, Bar, BarThree, CanError, Foo, LargerIntsWithOffsets, MsgExtendedId, MultiplexTest,
+    MultiplexTestMultiplexorIndex, MultiplexTestMultiplexorM0, NegativeFactorTest,
+    TruncatedBeSignal, TruncatedLeSignal,
 };
+use embedded_can::{ExtendedId, Id, StandardId};
 
 #[test]
-#[cfg(feature = "range_checked")]
 fn check_range_value_error() {
     let result = Bar::new(1, 2.0, 3, 4, true);
-    assert!(matches!(
-        result,
-        Err(CanError::ParameterOutOfRange { message_id: 512 })
-    ));
+    assert_eq!(
+        result.unwrap_err(),
+        CanError::ParameterOutOfRange {
+            message_id: Id::Standard(StandardId::new(512).unwrap())
+        }
+    );
 }
 
 #[test]
-#[cfg(feature = "range_checked")]
 fn check_range_value_valid() {
     let result = Bar::new(1, 2.0, 3, 3, true);
     assert!(result.is_ok());
@@ -78,6 +80,24 @@ fn pack_unpack_message_containing_multiplexed_signals() {
 }
 
 #[test]
+fn pack_unpack_signed_truncated_signal() {
+    let result = TruncatedBeSignal::new(42).unwrap();
+    assert_eq!(result.foo_raw(), 42);
+
+    let result = TruncatedLeSignal::new(42).unwrap();
+    assert_eq!(result.foo_raw(), 42);
+}
+
+#[test]
+fn pack_unpack_signed_truncated_signal_negative() {
+    let result = TruncatedBeSignal::new(-42).unwrap();
+    assert_eq!(result.foo_raw(), -42);
+
+    let result = TruncatedLeSignal::new(-42).unwrap();
+    assert_eq!(result.foo_raw(), -42);
+}
+
+#[test]
 fn offset_integers() {
     let mut m = LargerIntsWithOffsets::new(100, 30000).unwrap();
 
@@ -101,14 +121,18 @@ fn offset_integers() {
     assert_eq!(m.sixteen(), -1000);
 
     // Setting out of range values
-    assert!(matches!(
+    assert_eq!(
         m.set_twelve(-2000),
-        Err(CanError::ParameterOutOfRange { message_id: 1338 })
-    ));
-    assert!(matches!(
+        Err(CanError::ParameterOutOfRange {
+            message_id: Id::Standard(StandardId::new(1338).unwrap())
+        })
+    );
+    assert_eq!(
         m.set_sixteen(65536),
-        Err(CanError::ParameterOutOfRange { message_id: 1338 })
-    ));
+        Err(CanError::ParameterOutOfRange {
+            message_id: Id::Standard(StandardId::new(1338).unwrap())
+        })
+    );
 }
 
 #[test]
@@ -134,4 +158,38 @@ fn debug_alternative_impl() {
 fn from_enum_into_raw() {
     let raw: u8 = BarThree::Onest.into();
     assert_eq!(raw, 3);
+}
+
+#[test]
+fn negative_factor() {
+    assert_eq!(
+        NegativeFactorTest::UNSIGNED_NEGATIVE_FACTOR_SIGNAL_MIN,
+        -65535_i32,
+        "Rust type should expand to i32 to hold the negated u16"
+    );
+}
+
+#[test]
+fn test_min_max_doesnt_confuse_width() {
+    assert_eq!(
+        NegativeFactorTest::WIDTH_MORE_THAN_MIN_MAX_MAX,
+        2_i16,
+        "This signal should be i16 even though the min/max only needs i8."
+    )
+}
+
+#[test]
+fn test_standard_id() {
+    assert_eq!(
+        Foo::MESSAGE_ID,
+        Id::Standard(StandardId::new(0x100).unwrap())
+    )
+}
+
+#[test]
+fn test_extended_id() {
+    assert_eq!(
+        MsgExtendedId::MESSAGE_ID,
+        Id::Extended(ExtendedId::new(0x1234).unwrap())
+    )
 }

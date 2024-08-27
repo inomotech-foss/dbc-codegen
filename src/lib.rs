@@ -30,6 +30,7 @@ use anyhow::{anyhow, ensure, Context, Result};
 use can_dbc::{Message, MultiplexIndicator, Signal, ValDescription, ValueDescription, DBC};
 use heck::{ToPascalCase, ToSnakeCase};
 use pad::PadAdapter;
+use std::cmp::{max, min};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Display,
@@ -72,6 +73,10 @@ pub struct Config<'a> {
     /// Note: this feature depends on `std`.
     #[builder(default)]
     pub impl_error: FeatureConfig<'a>,
+
+    /// Optional: Generate `embedded_can::Frame` impl for each frame. Default: `Always`
+    #[builder(default = FeatureConfig::Always)]
+    pub impl_embedded_can_frame: FeatureConfig<'a>,
 
     /// Optional: Validate min and max values in generated signal setters. Default: `Always`
     #[builder(default = FeatureConfig::Always)]
@@ -150,6 +155,7 @@ pub fn codegen(config: Config<'_>, out: impl Write) -> Result<()> {
 
     writeln!(&mut w, "use core::ops::BitOr;")?;
     writeln!(&mut w, "use bitvec::prelude::*;")?;
+    writeln!(&mut w, "use embedded_can::{{Id, StandardId, ExtendedId}};")?;
 
     writeln!(w, r##"#[cfg(feature = "arb")]"##)?;
     writeln!(&mut w, "use arbitrary::{{Arbitrary, Unstructured}};")?;
@@ -217,7 +223,7 @@ fn render_root_enum(mut w: impl Write, dbc: &DBC, config: &Config<'_>) -> Result
         writeln!(w, "#[inline(never)]")?;
         writeln!(
             &mut w,
-            "pub fn from_can_message(id: u32, payload: &[u8]) -> Result<Self, CanError> {{",
+            "pub fn from_can_message(id: Id, payload: &[u8]) -> Result<Self, CanError> {{",
         )?;
         {
             let mut w = PadAdapter::wrap(&mut w);
@@ -228,12 +234,11 @@ fn render_root_enum(mut w: impl Write, dbc: &DBC, config: &Config<'_>) -> Result
                 for msg in get_relevant_messages(dbc) {
                     writeln!(
                         w,
-                        "{} => Messages::{1}({1}::try_from(payload)?),",
-                        msg.message_id().0,
+                        "{0}::MESSAGE_ID => Messages::{0}({0}::try_from(payload)?),",
                         type_name(msg.message_name())
                     )?;
                 }
-                writeln!(w, r#"n => return Err(CanError::UnknownMessageId(n)),"#)?;
+                writeln!(w, r#"id => return Err(CanError::UnknownMessageId(id)),"#)?;
             }
             writeln!(&mut w, "}};")?;
             writeln!(&mut w, "Ok(res)")?;
@@ -250,7 +255,10 @@ fn render_root_enum(mut w: impl Write, dbc: &DBC, config: &Config<'_>) -> Result
 fn render_message(mut w: impl Write, config: &Config<'_>, msg: &Message, dbc: &DBC) -> Result<()> {
     writeln!(w, "/// {}", msg.message_name())?;
     writeln!(w, "///")?;
-    writeln!(w, "/// - ID: {0} (0x{0:x})", msg.message_id().0)?;
+    match msg.message_id() {
+        can_dbc::MessageId::Standard(id) => writeln!(w, "/// - Standard ID: {0} (0x{0:x})", id),
+        can_dbc::MessageId::Extended(id) => writeln!(w, "/// - Extended ID: {0} (0x{0:x})", id),
+    }?;
     writeln!(w, "/// - Size: {} bytes", msg.message_size())?;
     if let can_dbc::Transmitter::NodeName(transmitter) = msg.transmitter() {
         writeln!(w, "/// - Transmitter: {}", transmitter)?;
@@ -269,7 +277,7 @@ fn render_message(mut w: impl Write, config: &Config<'_>, msg: &Message, dbc: &D
         let mut w = PadAdapter::wrap(&mut w);
         config
             .impl_serde
-            .fmt_attr(&mut w, "serde(with = \"serde_bytes\")");
+            .fmt_attr(&mut w, "serde(with = \"serde_bytes\")")?;
         writeln!(w, "raw: [u8; {}],", msg.message_size())?;
     }
     writeln!(w, "}}")?;
@@ -281,8 +289,18 @@ fn render_message(mut w: impl Write, config: &Config<'_>, msg: &Message, dbc: &D
 
         writeln!(
             &mut w,
-            "pub const MESSAGE_ID: u32 = {};",
-            msg.message_id().0
+            "pub const MESSAGE_ID: embedded_can::Id = {};",
+            match msg.message_id() {
+                // use StandardId::new().unwrap() once const_option is stable
+                can_dbc::MessageId::Standard(id) => format!(
+                    "Id::Standard(unsafe {{ StandardId::new_unchecked({0:#x})}})",
+                    id
+                ),
+                can_dbc::MessageId::Extended(id) => format!(
+                    "Id::Extended(unsafe {{ ExtendedId::new_unchecked({0:#x})}})",
+                    id
+                ),
+            }
         )?;
         writeln!(w)?;
 
@@ -421,6 +439,8 @@ fn render_message(mut w: impl Write, config: &Config<'_>, msg: &Message, dbc: &D
     }
     writeln!(w, "}}")?;
     writeln!(w)?;
+
+    render_embedded_can_frame(&mut w, config, msg)?;
 
     render_debug_impl(&mut w, config, msg)?;
 
@@ -630,8 +650,8 @@ fn render_set_signal(
                     let mut w = PadAdapter::wrap(&mut w);
                     writeln!(
                         w,
-                        r##"return Err(CanError::ParameterOutOfRange {{ message_id: {message_id} }});"##,
-                        message_id = msg.message_id().0,
+                        r##"return Err(CanError::ParameterOutOfRange {{ message_id: {}::MESSAGE_ID }});"##,
+                        type_name(msg.message_name())
                     )?;
                 }
                 writeln!(w, r"}}")?;
@@ -749,8 +769,8 @@ fn render_multiplexor_signal(
             }
             writeln!(
                 &mut w,
-                "multiplexor => Err(CanError::InvalidMultiplexor {{ message_id: {}, multiplexor: multiplexor.into() }}),",
-                msg.message_id().0
+                "multiplexor => Err(CanError::InvalidMultiplexor {{ message_id: {}::MESSAGE_ID, multiplexor: multiplexor.into() }}),",
+                type_name(msg.message_name())
             )?;
         }
 
@@ -839,7 +859,7 @@ fn signal_from_payload(mut w: impl Write, signal: &Signal, msg: &Message) -> Res
 
             format!(
                 "self.raw.view_bits::<Lsb0>()[{start}..{end}].load_le::<{typ}>()",
-                typ = signal_to_rust_uint(signal),
+                typ = signal_to_rust_int(signal),
                 start = start_bit,
                 end = end_bit,
             )
@@ -849,7 +869,7 @@ fn signal_from_payload(mut w: impl Write, signal: &Signal, msg: &Message) -> Res
 
             format!(
                 "self.raw.view_bits::<Msb0>()[{start}..{end}].load_be::<{typ}>()",
-                typ = signal_to_rust_uint(signal),
+                typ = signal_to_rust_int(signal),
                 start = start_bit,
                 end = end_bit
             )
@@ -858,14 +878,6 @@ fn signal_from_payload(mut w: impl Write, signal: &Signal, msg: &Message) -> Res
 
     writeln!(&mut w, r#"let signal = {};"#, read_fn)?;
     writeln!(&mut w)?;
-
-    if *signal.value_type() == can_dbc::ValueType::Signed {
-        writeln!(
-            &mut w,
-            "let signal  = {}::from_ne_bytes(signal.to_ne_bytes());",
-            signal_to_rust_int(signal)
-        )?;
-    };
 
     if signal.signal_size == 1 {
         writeln!(&mut w, "signal == 1")?;
@@ -929,8 +941,7 @@ fn signal_to_payload(mut w: impl Write, signal: &Signal, msg: &Message) -> Resul
         }
         writeln!(
             &mut w,
-            "    .ok_or(CanError::ParameterOutOfRange {{ message_id: {} }})?;",
-            msg.message_id().0,
+            "    .ok_or(CanError::ParameterOutOfRange {{ message_id: Self::MESSAGE_ID }})?;",
         )?;
         writeln!(
             &mut w,
@@ -1041,11 +1052,6 @@ fn write_enum(
 ///
 /// NOTE: Factor and offset must be whole integers.
 fn scaled_signal_to_rust_int(signal: &Signal) -> String {
-    let sign = match signal.value_type() {
-        can_dbc::ValueType::Signed => "i",
-        can_dbc::ValueType::Unsigned => "u",
-    };
-
     assert!(
         signal.factor.fract().abs() <= f64::EPSILON,
         "Signal Factor ({}) should be an integer",
@@ -1053,47 +1059,120 @@ fn scaled_signal_to_rust_int(signal: &Signal) -> String {
     );
     assert!(
         signal.offset.fract().abs() <= f64::EPSILON,
-        "Signal Factor ({}) should be an integer",
+        "Signal Offset ({}) should be an integer",
         signal.offset,
     );
 
-    // calculate the maximum possible signal value, accounting for factor and offset
+    let err = format!(
+        "Signal {} could not be represented as a Rust integer",
+        &signal.name()
+    );
+    signal_params_to_rust_int(
+        *signal.value_type(),
+        signal.signal_size as u32,
+        signal.factor as i64,
+        signal.offset as i64,
+    )
+    .expect(&err)
+}
 
-    if signal.min >= 0.0 {
-        let factor = signal.factor as u64;
-        let offset = signal.offset as u64;
-        let max_value = 1u64
-            .checked_shl(*signal.signal_size() as u32)
-            .map(|n| n.saturating_sub(1))
-            .and_then(|n| n.checked_mul(factor))
-            .and_then(|n| n.checked_add(offset))
-            .unwrap_or(u64::MAX);
-
-        let size = match max_value {
-            n if n <= u8::MAX.into() => "8",
-            n if n <= u16::MAX.into() => "16",
-            n if n <= u32::MAX.into() => "32",
-            _ => "64",
-        };
-        format!("{sign}{size}")
-    } else {
-        let factor = signal.factor as i64;
-        let offset = signal.offset as i64;
-        let max_value = 1i64
-            .checked_shl(*signal.signal_size() as u32)
-            .map(|n| n.saturating_sub(1))
-            .and_then(|n| n.checked_mul(factor))
-            .and_then(|n| n.checked_add(offset))
-            .unwrap_or(i64::MAX);
-
-        let size = match max_value {
-            n if n <= i8::MAX.into() => "8",
-            n if n <= i16::MAX.into() => "16",
-            n if n <= i32::MAX.into() => "32",
-            _ => "64",
-        };
-        format!("i{size}")
+/// Convert the relevant parameters of a `can_dbc::Signal` into a Rust type.
+fn signal_params_to_rust_int(
+    sign: can_dbc::ValueType,
+    signal_size: u32,
+    factor: i64,
+    offset: i64,
+) -> Option<String> {
+    if signal_size > 64 {
+        return None;
     }
+    let range = get_range_of_values(sign, signal_size, factor, offset);
+    match range {
+        Some((low, high)) => Some(range_to_rust_int(low, high)),
+        _ => None,
+    }
+}
+
+/// Using the signal's parameters, find the range of values that it spans.
+fn get_range_of_values(
+    sign: can_dbc::ValueType,
+    signal_size: u32,
+    factor: i64,
+    offset: i64,
+) -> Option<(i128, i128)> {
+    if signal_size == 0 {
+        return None;
+    }
+    let low;
+    let high;
+    match sign {
+        can_dbc::ValueType::Signed => {
+            low = 1i128
+                .checked_shl(signal_size.saturating_sub(1))
+                .and_then(|n| n.checked_mul(-1));
+            high = 1i128
+                .checked_shl(signal_size.saturating_sub(1))
+                .and_then(|n| n.checked_sub(1));
+        }
+        can_dbc::ValueType::Unsigned => {
+            low = Some(0);
+            high = 1i128
+                .checked_shl(signal_size)
+                .and_then(|n| n.checked_sub(1));
+        }
+    }
+    let range1 = apply_factor_and_offset(low, factor, offset);
+    let range2 = apply_factor_and_offset(high, factor, offset);
+    match (range1, range2) {
+        (Some(a), Some(b)) => Some((min(a, b), max(a, b))),
+        _ => None,
+    }
+}
+
+fn apply_factor_and_offset(input: Option<i128>, factor: i64, offset: i64) -> Option<i128> {
+    input
+        .and_then(|n| n.checked_mul(factor.into()))
+        .and_then(|n| n.checked_add(offset.into()))
+}
+
+/// Determine the smallest Rust integer type that can fit the range of values
+/// Only values derived from 64 bit integers are supported, i.e. the range [-2^64-1, 2^64-1]
+fn range_to_rust_int(low: i128, high: i128) -> String {
+    let lower_bound: u8;
+    let upper_bound: u8;
+    let sign: &str;
+
+    if low < 0 {
+        // signed case
+        sign = "i";
+        lower_bound = match low {
+            n if n >= i8::MIN.into() => 8,
+            n if n >= i16::MIN.into() => 16,
+            n if n >= i32::MIN.into() => 32,
+            n if n >= i64::MIN.into() => 64,
+            _ => 128,
+        };
+        upper_bound = match high {
+            n if n <= i8::MAX.into() => 8,
+            n if n <= i16::MAX.into() => 16,
+            n if n <= i32::MAX.into() => 32,
+            n if n <= i64::MAX.into() => 64,
+            _ => 128,
+        };
+    } else {
+        sign = "u";
+        lower_bound = 8;
+        upper_bound = match high {
+            n if n <= u8::MAX.into() => 8,
+            n if n <= u16::MAX.into() => 16,
+            n if n <= u32::MAX.into() => 32,
+            n if n <= u64::MAX.into() => 64,
+            _ => 128,
+        };
+    }
+
+    let size = max(lower_bound, upper_bound);
+    format!("{sign}{size}")
 }
 
 /// Determine the smallest rust integer that can fit the raw signal values.
@@ -1218,6 +1297,56 @@ fn multiplexed_enum_variant_name(
         multiplexor.name().to_pascal_case(),
         switch_index
     ))
+}
+
+fn render_embedded_can_frame(
+    w: &mut impl Write,
+    config: &Config<'_>,
+    msg: &Message,
+) -> Result<(), std::io::Error> {
+    config.impl_embedded_can_frame.fmt_cfg(w, |w| {
+        writeln!(
+            w,
+            "\
+impl embedded_can::Frame for {0} {{
+    fn new(id: impl Into<Id>, data: &[u8]) -> Option<Self> {{
+        if id.into() != Self::MESSAGE_ID {{
+            None
+        }} else {{
+            data.try_into().ok()
+        }}
+    }}
+
+    fn new_remote(_id: impl Into<Id>, _dlc: usize) -> Option<Self> {{
+        unimplemented!()
+    }}
+
+    fn is_extended(&self) -> bool {{
+        match self.id() {{
+            Id::Standard(_) => false,
+            Id::Extended(_) => true,
+        }}
+    }}
+
+    fn is_remote_frame(&self) -> bool {{
+        false
+    }}
+
+    fn id(&self) -> Id {{
+        Self::MESSAGE_ID
+    }}
+
+    fn dlc(&self) -> usize {{
+        self.raw.len()
+    }}
+
+    fn data(&self) -> &[u8] {{
+        &self.raw
+    }}
+}}",
+            type_name(msg.message_name())
+        )
+    })
 }
 
 fn render_debug_impl(mut w: impl Write, config: &Config<'_>, msg: &Message) -> Result<()> {
@@ -1513,5 +1642,61 @@ impl FeatureConfig<'_> {
         }
 
         f(&mut w)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{get_range_of_values, range_to_rust_int, signal_params_to_rust_int};
+    use can_dbc::ValueType::{Signed, Unsigned};
+
+    #[test]
+    fn test_range_of_values() {
+        assert_eq!(get_range_of_values(Unsigned, 4, 1, 0), Some((0, 15)));
+        assert_eq!(
+            get_range_of_values(Unsigned, 32, -1, 0),
+            Some((-(u32::MAX as i128), 0))
+        );
+        assert_eq!(
+            get_range_of_values(Unsigned, 12, 1, -1000),
+            Some((-1000, 3095))
+        );
+    }
+
+    #[test]
+    fn test_range_0_signal_size() {
+        assert_eq!(
+            get_range_of_values(Signed, 0, 1, 0),
+            None,
+            "0 bit signal should be invalid"
+        );
+    }
+
+    #[test]
+    fn test_range_to_rust_int() {
+        assert_eq!(range_to_rust_int(0, 255), "u8");
+        assert_eq!(range_to_rust_int(-1, 127), "i8");
+        assert_eq!(range_to_rust_int(-1, 128), "i16");
+        assert_eq!(range_to_rust_int(-1, 255), "i16");
+        assert_eq!(range_to_rust_int(-65535, 0), "i32");
+        assert_eq!(range_to_rust_int(-129, -127), "i16");
+        assert_eq!(range_to_rust_int(0, 1i128 << 65), "u128");
+        assert_eq!(range_to_rust_int(-(1i128 << 65), 0), "i128");
+    }
+
+    #[test]
+    fn test_convert_signal_params_to_rust_int() {
+        assert_eq!(signal_params_to_rust_int(Signed, 8, 1, 0).unwrap(), "i8");
+        assert_eq!(signal_params_to_rust_int(Signed, 8, 2, 0).unwrap(), "i16");
+        assert_eq!(signal_params_to_rust_int(Signed, 63, 1, 0).unwrap(), "i64");
+        assert_eq!(
+            signal_params_to_rust_int(Unsigned, 64, -1, 0).unwrap(),
+            "i128"
+        );
+        assert_eq!(
+            signal_params_to_rust_int(Unsigned, 65, 1, 0),
+            None,
+            "This shouldn't be valid in a DBC, it's more than 64 bits"
+        );
     }
 }
