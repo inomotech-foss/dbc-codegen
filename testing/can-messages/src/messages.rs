@@ -10,6 +10,8 @@ use embedded_can::{ExtendedId, Id, StandardId};
 pub enum Messages {
     /// Foo
     Foo(Foo),
+    /// BoolMultiplex
+    BoolMultiplex(BoolMultiplex),
     /// Bar
     Bar(Bar),
     /// _4WD
@@ -42,6 +44,7 @@ impl Messages {
     pub fn from_can_message(id: Id, payload: &[u8]) -> Result<Self, CanError> {
         let res = match id {
             Foo::MESSAGE_ID => Messages::Foo(Foo::try_from(payload)?),
+            BoolMultiplex::MESSAGE_ID => Messages::BoolMultiplex(BoolMultiplex::try_from(payload)?),
             Bar::MESSAGE_ID => Messages::Bar(Bar::try_from(payload)?),
             X4wd::MESSAGE_ID => Messages::X4wd(X4wd::try_from(payload)?),
             Amet::MESSAGE_ID => Messages::Amet(Amet::try_from(payload)?),
@@ -135,6 +138,7 @@ impl Foo {
     /// Set value of Voltage
     #[inline(always)]
     pub fn set_voltage(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 63.9990234375_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Foo::MESSAGE_ID,
@@ -179,6 +183,7 @@ impl Foo {
     /// Set value of Current
     #[inline(always)]
     pub fn set_current(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -2048_f32 || 2047.9375_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Foo::MESSAGE_ID,
@@ -277,6 +282,247 @@ impl<'a> Arbitrary<'a> for Foo {
     }
 }
 
+/// BoolMultiplex
+///
+/// - Standard ID: 264 (0x108)
+/// - Size: 8 bytes
+/// - Transmitter: Amet
+#[derive(Clone, Copy)]
+pub struct BoolMultiplex {
+    raw: [u8; 8],
+}
+
+impl BoolMultiplex {
+    pub const MESSAGE_ID: embedded_can::Id =
+        Id::Standard(unsafe { StandardId::new_unchecked(0x108) });
+
+    pub const V0_MIN: i16 = -127_i16;
+    pub const V0_MAX: i16 = 126_i16;
+
+    /// Construct new BoolMultiplex from values
+    pub fn new(mux: bool) -> Result<Self, CanError> {
+        let mut res = Self { raw: [0u8; 8] };
+        res.set_mux(mux)?;
+        Ok(res)
+    }
+
+    /// Access message payload raw value
+    pub fn raw(&self) -> &[u8; 8] {
+        &self.raw
+    }
+
+    /// Get raw value of Mux
+    ///
+    /// - Start bit: 12
+    /// - Signal size: 1 bits
+    /// - Factor: 1
+    /// - Offset: 0
+    /// - Byte order: LittleEndian
+    /// - Value type: Unsigned
+    #[inline(always)]
+    pub fn mux_raw(&self) -> bool {
+        let signal = self.raw.view_bits::<Lsb0>()[12..13].load_le::<u8>();
+
+        signal == 1
+    }
+
+    pub fn mux(&mut self) -> Result<BoolMultiplexMuxIndex, CanError> {
+        match self.mux_raw() {
+            false => Ok(BoolMultiplexMuxIndex::M0(BoolMultiplexMuxM0 {
+                raw: self.raw,
+            })),
+            multiplexor => Err(CanError::InvalidMultiplexor {
+                message_id: BoolMultiplex::MESSAGE_ID,
+                multiplexor: multiplexor.into(),
+            }),
+        }
+    }
+    /// Set value of Mux
+    #[inline(always)]
+    fn set_mux(&mut self, value: bool) -> Result<(), CanError> {
+        let value = value as u8;
+        self.raw.view_bits_mut::<Lsb0>()[12..13].store_le(value);
+        Ok(())
+    }
+
+    /// Set value of Mux
+    #[inline(always)]
+    pub fn set_m0(&mut self, value: BoolMultiplexMuxM0) -> Result<(), CanError> {
+        let b0 = BitArray::<_, LocalBits>::new(self.raw);
+        let b1 = BitArray::<_, LocalBits>::new(value.raw);
+        self.raw = b0.bitor(b1).into_inner();
+        self.set_mux(false)?;
+        Ok(())
+    }
+}
+
+impl core::convert::TryFrom<&[u8]> for BoolMultiplex {
+    type Error = CanError;
+
+    #[inline(always)]
+    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
+        if payload.len() != 8 {
+            return Err(CanError::InvalidPayloadSize);
+        }
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(&payload[..8]);
+        Ok(Self { raw })
+    }
+}
+
+impl embedded_can::Frame for BoolMultiplex {
+    fn new(id: impl Into<Id>, data: &[u8]) -> Option<Self> {
+        if id.into() != Self::MESSAGE_ID {
+            None
+        } else {
+            data.try_into().ok()
+        }
+    }
+
+    fn new_remote(_id: impl Into<Id>, _dlc: usize) -> Option<Self> {
+        unimplemented!()
+    }
+
+    fn is_extended(&self) -> bool {
+        match self.id() {
+            Id::Standard(_) => false,
+            Id::Extended(_) => true,
+        }
+    }
+
+    fn is_remote_frame(&self) -> bool {
+        false
+    }
+
+    fn id(&self) -> Id {
+        Self::MESSAGE_ID
+    }
+
+    fn dlc(&self) -> usize {
+        self.raw.len()
+    }
+
+    fn data(&self) -> &[u8] {
+        &self.raw
+    }
+}
+impl core::fmt::Debug for BoolMultiplex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if f.alternate() {
+            f.debug_struct("BoolMultiplex").finish()
+        } else {
+            f.debug_tuple("BoolMultiplex").field(&self.raw).finish()
+        }
+    }
+}
+
+impl defmt::Format for BoolMultiplex {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "BoolMultiplex {{ }}",);
+    }
+}
+
+#[cfg(feature = "arb")]
+impl<'a> Arbitrary<'a> for BoolMultiplex {
+    fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+        let mux = u.int_in_range(0..=1)? == 1;
+        BoolMultiplex::new(mux).map_err(|_| arbitrary::Error::IncorrectFormat)
+    }
+}
+/// Defined values for Mux
+#[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
+pub enum BoolMultiplexMux {
+    A,
+    B,
+    _Other(u8),
+}
+
+impl From<BoolMultiplexMux> for u8 {
+    #[inline(always)]
+    fn from(val: BoolMultiplexMux) -> u8 {
+        match val {
+            BoolMultiplexMux::A => 0,
+            BoolMultiplexMux::B => 1,
+            BoolMultiplexMux::_Other(x) => x,
+        }
+    }
+}
+
+impl From<u8> for BoolMultiplexMux {
+    #[inline(always)]
+    fn from(val: u8) -> BoolMultiplexMux {
+        match val {
+            0 => BoolMultiplexMux::A,
+            1 => BoolMultiplexMux::B,
+            x => BoolMultiplexMux::_Other(x),
+        }
+    }
+}
+
+/// Defined values for multiplexed signal BoolMultiplex
+#[derive(Debug, defmt::Format)]
+pub enum BoolMultiplexMuxIndex {
+    M0(BoolMultiplexMuxM0),
+}
+
+#[derive(Debug, defmt::Format, Default)]
+pub struct BoolMultiplexMuxM0 {
+    raw: [u8; 8],
+}
+
+impl BoolMultiplexMuxM0 {
+    pub fn new() -> Self {
+        Self { raw: [0u8; 8] }
+    }
+    /// v0
+    ///
+    /// - Min: -127
+    /// - Max: 126
+    /// - Unit: ""
+    /// - Receivers: Vector__XXX
+    #[inline(always)]
+    pub fn v0(&self) -> i16 {
+        self.v0_raw()
+    }
+
+    /// Get raw value of v0
+    ///
+    /// - Start bit: 16
+    /// - Signal size: 8 bits
+    /// - Factor: 1
+    /// - Offset: -127
+    /// - Byte order: LittleEndian
+    /// - Value type: Unsigned
+    #[inline(always)]
+    pub fn v0_raw(&self) -> i16 {
+        let signal = self.raw.view_bits::<Lsb0>()[16..24].load_le::<u8>();
+
+        let factor = 1;
+        i16::from(signal).saturating_mul(factor).saturating_sub(127)
+    }
+
+    /// Set value of v0
+    #[inline(always)]
+    pub fn set_v0(&mut self, value: i16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
+        if value < -127_i16 || 126_i16 < value {
+            return Err(CanError::ParameterOutOfRange {
+                message_id: BoolMultiplex::MESSAGE_ID,
+            });
+        }
+        let factor = 1;
+        let value = value
+            .checked_add(127)
+            .ok_or(CanError::ParameterOutOfRange {
+                message_id: BoolMultiplex::MESSAGE_ID,
+            })?;
+        let value = (value / factor) as u8;
+
+        self.raw.view_bits_mut::<Lsb0>()[16..24].store_le(value);
+        Ok(())
+    }
+}
+
 /// Bar
 ///
 /// - Standard ID: 512 (0x200)
@@ -346,6 +592,7 @@ impl Bar {
     /// Set value of One
     #[inline(always)]
     pub fn set_one(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 3_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Bar::MESSAGE_ID,
@@ -392,6 +639,7 @@ impl Bar {
     /// Set value of Two
     #[inline(always)]
     pub fn set_two(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 100_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Bar::MESSAGE_ID,
@@ -436,6 +684,7 @@ impl Bar {
     /// Set value of Three
     #[inline(always)]
     pub fn set_three(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 7_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Bar::MESSAGE_ID,
@@ -482,6 +731,7 @@ impl Bar {
     /// Set value of Four
     #[inline(always)]
     pub fn set_four(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 3_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Bar::MESSAGE_ID,
@@ -786,6 +1036,7 @@ impl X4wd {
     /// Set value of _4DRIVE
     #[inline(always)]
     pub fn set_x4drive(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 7_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: X4wd::MESSAGE_ID,
@@ -982,6 +1233,7 @@ impl Amet {
     /// Set value of One
     #[inline(always)]
     pub fn set_one(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 3_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Amet::MESSAGE_ID,
@@ -1028,6 +1280,7 @@ impl Amet {
     /// Set value of Two
     #[inline(always)]
     pub fn set_two(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 100_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Amet::MESSAGE_ID,
@@ -1071,6 +1324,7 @@ impl Amet {
     /// Set value of Three
     #[inline(always)]
     pub fn set_three(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 7_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Amet::MESSAGE_ID,
@@ -1116,6 +1370,7 @@ impl Amet {
     /// Set value of Four
     #[inline(always)]
     pub fn set_four(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 3_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Amet::MESSAGE_ID,
@@ -1319,6 +1574,7 @@ impl Dolor {
     /// Set value of OneFloat
     #[inline(always)]
     pub fn set_one_float(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 130_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: Dolor::MESSAGE_ID,
@@ -1511,6 +1767,7 @@ impl MultiplexTest {
     /// Set value of Multiplexor
     #[inline(always)]
     fn set_multiplexor(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 2_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: MultiplexTest::MESSAGE_ID,
@@ -1576,6 +1833,7 @@ impl MultiplexTest {
     /// Set value of UnmultiplexedSignal
     #[inline(always)]
     pub fn set_unmultiplexed_signal(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 4_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: MultiplexTest::MESSAGE_ID,
@@ -1720,6 +1978,7 @@ impl MultiplexTestMultiplexorM0 {
     /// Set value of MultiplexedSignalZeroA
     #[inline(always)]
     pub fn set_multiplexed_signal_zero_a(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 3_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: MultiplexTest::MESSAGE_ID,
@@ -1764,6 +2023,7 @@ impl MultiplexTestMultiplexorM0 {
     /// Set value of MultiplexedSignalZeroB
     #[inline(always)]
     pub fn set_multiplexed_signal_zero_b(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 3_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: MultiplexTest::MESSAGE_ID,
@@ -1818,6 +2078,7 @@ impl MultiplexTestMultiplexorM1 {
     /// Set value of MultiplexedSignalOneA
     #[inline(always)]
     pub fn set_multiplexed_signal_one_a(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 6_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: MultiplexTest::MESSAGE_ID,
@@ -1862,6 +2123,7 @@ impl MultiplexTestMultiplexorM1 {
     /// Set value of MultiplexedSignalOneB
     #[inline(always)]
     pub fn set_multiplexed_signal_one_b(&mut self, value: f32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_f32 || 6_f32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: MultiplexTest::MESSAGE_ID,
@@ -1953,6 +2215,7 @@ impl IntegerFactorOffset {
     /// Set value of ByteWithOffset
     #[inline(always)]
     pub fn set_byte_with_offset(&mut self, value: u16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 1_u16 || 256_u16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: IntegerFactorOffset::MESSAGE_ID,
@@ -1998,6 +2261,7 @@ impl IntegerFactorOffset {
     /// Set value of ByteWithFactor
     #[inline(always)]
     pub fn set_byte_with_factor(&mut self, value: u16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u16 || 1020_u16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: IntegerFactorOffset::MESSAGE_ID,
@@ -2043,6 +2307,7 @@ impl IntegerFactorOffset {
     /// Set value of ByteWithBoth
     #[inline(always)]
     pub fn set_byte_with_both(&mut self, value: u16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 16_u16 || 526_u16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: IntegerFactorOffset::MESSAGE_ID,
@@ -2088,6 +2353,7 @@ impl IntegerFactorOffset {
     /// Set value of ByteWithNegativeOffset
     #[inline(always)]
     pub fn set_byte_with_negative_offset(&mut self, value: i16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_i16 || 255_i16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: IntegerFactorOffset::MESSAGE_ID,
@@ -2133,6 +2399,7 @@ impl IntegerFactorOffset {
     /// Set value of ByteWithNegativeMin
     #[inline(always)]
     pub fn set_byte_with_negative_min(&mut self, value: i16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -127_i16 || 127_i16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: IntegerFactorOffset::MESSAGE_ID,
@@ -2317,6 +2584,7 @@ impl NegativeFactorTest {
     /// Set value of UnsignedNegativeFactorSignal
     #[inline(always)]
     pub fn set_unsigned_negative_factor_signal(&mut self, value: i32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -65535_i32 || 0_i32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: NegativeFactorTest::MESSAGE_ID,
@@ -2363,6 +2631,7 @@ impl NegativeFactorTest {
     /// Set value of WidthMoreThanMinMax
     #[inline(always)]
     pub fn set_width_more_than_min_max(&mut self, value: i16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -2_i16 || 2_i16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: NegativeFactorTest::MESSAGE_ID,
@@ -2534,6 +2803,7 @@ impl LargerIntsWithOffsets {
     /// Set value of Twelve
     #[inline(always)]
     pub fn set_twelve(&mut self, value: i16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -1000_i16 || 3000_i16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: LargerIntsWithOffsets::MESSAGE_ID,
@@ -2583,6 +2853,7 @@ impl LargerIntsWithOffsets {
     /// Set value of Sixteen
     #[inline(always)]
     pub fn set_sixteen(&mut self, value: i32) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -1000_i32 || 64535_i32 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: LargerIntsWithOffsets::MESSAGE_ID,
@@ -2845,6 +3116,7 @@ impl TruncatedBeSignal {
     /// Set value of Foo
     #[inline(always)]
     pub fn set_foo(&mut self, value: i16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -100_i16 || 100_i16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: TruncatedBeSignal::MESSAGE_ID,
@@ -2998,6 +3270,7 @@ impl TruncatedLeSignal {
     /// Set value of Foo
     #[inline(always)]
     pub fn set_foo(&mut self, value: i16) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < -100_i16 || 100_i16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: TruncatedLeSignal::MESSAGE_ID,
@@ -3150,6 +3423,7 @@ impl MsgExtendedId {
     /// Set value of Dummy
     #[inline(always)]
     pub fn set_dummy(&mut self, value: u8) -> Result<(), CanError> {
+        #[allow(unused_comparisons)]
         if value < 0_u8 || 3_u8 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: MsgExtendedId::MESSAGE_ID,
