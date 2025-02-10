@@ -501,7 +501,7 @@ fn render_signal(
     writeln!(w, "/// - Unit: {:?}", signal.unit())?;
     writeln!(w, "/// - Receivers: {}", signal.receivers().join(", "))?;
     writeln!(w, "#[inline(always)]")?;
-    if let Some(variants) = dbc.value_descriptions_for_signal(*msg.message_id(), signal.name()) {
+    if dbc.value_descriptions_for_signal(*msg.message_id(), signal.name()).is_some() {
         let type_name = enum_name(msg, signal);
 
         writeln!(
@@ -511,11 +511,6 @@ fn render_signal(
             type_name,
         )?;
         {
-            let match_on_raw_type = match signal_to_rust_type(signal).as_str() {
-                "bool" => |x: f64| format!("{}", x),
-                // "f32" => |x: f64| format!("x if approx_eq!(f32, x, {}_f32, ulps = 2)", x),
-                _ => |x: f64| format!("{}", x),
-            };
             let mut w = PadAdapter::wrap(&mut w);
             let read_fn = match signal.byte_order() {
                 can_dbc::ByteOrder::LittleEndian => {
@@ -541,28 +536,7 @@ fn render_signal(
             };
 
             writeln!(&mut w, r#"let signal = {};"#, read_fn)?;
-            writeln!(&mut w)?;
-            writeln!(&mut w, "match signal {{")?;
-            {
-                let mut w = PadAdapter::wrap(&mut w);
-                for variant in variants {
-                    let literal = match_on_raw_type(*variant.a());
-                    writeln!(
-                        &mut w,
-                        "{} => {}::{},",
-                        literal,
-                        type_name,
-                        enum_variant_name(variant.b())
-                    )?;
-                }
-                writeln!(
-                    &mut w,
-                    "_ => {}::_Other(self.{}_raw()),",
-                    type_name,
-                    field_name(signal.name())
-                )?;
-            }
-            writeln!(&mut w, "}}")?;
+            writeln!(&mut w, "signal.into()")?;
         }
         writeln!(&mut w, "}}")?;
         writeln!(w)?;
@@ -996,7 +970,26 @@ fn write_enum(
     variants: &[ValDescription],
 ) -> Result<()> {
     let type_name = enum_name(msg, signal);
-    let signal_rust_type = signal_to_rust_type(signal);
+    let signal_rust_type = signal_to_rust_uint(signal);
+
+    let mut variant_names = variants.iter().map(|desc| enum_variant_name(desc.b())).collect::<Box<_>>();
+    let has_duplicate_variant_names = (1..variant_names.len()).any(|i| variant_names[i..].contains(&variant_names[i - 1]));
+    if has_duplicate_variant_names {
+        use std::fmt::Write;
+
+        if matches!(signal_rust_type.as_str(), "f32" | "f64") {
+            // if we're actually dealing with floats, add the index to distinguish the variants
+            for (i, name) in variant_names.iter_mut().enumerate() {
+                let _ = write!(name, "X{i}");
+            }
+        } else {
+            // for everyhing else add the actual value
+            for (desc, name) in variants.iter().zip(variant_names.iter_mut()) {
+                let v = *desc.a() as i64;
+                let _ = write!(name, "X{v}");
+            }
+        }
+    }
 
     writeln!(w, "/// Defined values for {}", signal.name())?;
     writeln!(w, "#[derive(Clone, Copy, PartialEq)]")?;
@@ -1009,23 +1002,25 @@ fn write_enum(
     writeln!(w, "pub enum {} {{", type_name)?;
     {
         let mut w = PadAdapter::wrap(&mut w);
-        for variant in variants {
-            writeln!(w, "{},", enum_variant_name(variant.b()))?;
+        for name in variant_names.iter() {
+            writeln!(w, "{name},")?;
         }
         writeln!(w, "_Other({}),", signal_rust_type)?;
     }
     writeln!(w, "}}")?;
     writeln!(w)?;
 
+
+    let match_on_raw_type = match signal_rust_type.as_str() {
+        "bool" => |x: f64| format!("{}", (x as i64) == 1),
+        "f32" => |x: f64| format!("{}_f32", x),
+        _ => |x: f64| format!("{}", x as i64),
+    };
+
     writeln!(w, "impl From<{type_name}> for {signal_rust_type} {{")?;
     {
-        let match_on_raw_type = match signal_to_rust_type(signal).as_str() {
-            "bool" => |x: f64| format!("{}", (x as i64) == 1),
-            "f32" => |x: f64| format!("{}_f32", x),
-            _ => |x: f64| format!("{}", x as i64),
-        };
-
         let mut w = PadAdapter::wrap(&mut w);
+        writeln!(w, "#[inline(always)]")?;
         writeln!(w, "fn from(val: {type_name}) -> {signal_rust_type} {{")?;
         {
             let mut w = PadAdapter::wrap(&mut w);
@@ -1033,17 +1028,42 @@ fn write_enum(
             writeln!(&mut w, "match val {{")?;
             {
                 let mut w = PadAdapter::wrap(&mut w);
-                for variant in variants {
-                    let literal = match_on_raw_type(*variant.a());
+                for (desc,name) in variants.iter().zip(variant_names.iter()) {
+                    let literal = match_on_raw_type(*desc.a());
                     writeln!(
                         &mut w,
-                        "{}::{} => {},",
-                        type_name,
-                        enum_variant_name(variant.b()),
-                        literal,
+                        "{type_name}::{name} => {literal},"
                     )?;
                 }
                 writeln!(&mut w, "{}::_Other(x) => x,", type_name,)?;
+            }
+            writeln!(w, "}}")?;
+        }
+        writeln!(w, "}}")?;
+    }
+    writeln!(w, "}}")?;
+    writeln!(w)?;
+
+    writeln!(w, "impl From<{signal_rust_type}> for {type_name} {{")?;
+    {
+
+        let mut w = PadAdapter::wrap(&mut w);
+        writeln!(w, "#[inline(always)]")?;
+        writeln!(w, "fn from(val: {signal_rust_type}) -> {type_name} {{")?;
+        {
+            let mut w = PadAdapter::wrap(&mut w);
+
+            writeln!(&mut w, "match val {{")?;
+            {
+                let mut w = PadAdapter::wrap(&mut w);
+                for (desc,name) in variants.iter().zip(variant_names.iter()) {
+                    let literal = match_on_raw_type(*desc.a());
+                    writeln!(
+                        &mut w,
+                        "{literal} => {type_name}::{name},"
+                    )?;
+                }
+                writeln!(&mut w, "x => {type_name}::_Other(x),")?;
             }
             writeln!(w, "}}")?;
         }

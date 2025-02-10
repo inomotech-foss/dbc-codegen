@@ -414,14 +414,7 @@ impl Bar {
     #[inline(always)]
     pub fn three(&self) -> BarThree {
         let signal = self.raw.view_bits::<Msb0>()[10..13].load_be::<u8>();
-
-        match signal {
-            0 => BarThree::Off,
-            1 => BarThree::On,
-            2 => BarThree::Oner,
-            3 => BarThree::Onest,
-            _ => BarThree::_Other(self.three_raw()),
-        }
+        signal.into()
     }
 
     /// Get raw value of Three
@@ -467,14 +460,7 @@ impl Bar {
     #[inline(always)]
     pub fn four(&self) -> BarFour {
         let signal = self.raw.view_bits::<Msb0>()[13..15].load_be::<u8>();
-
-        match signal {
-            0 => BarFour::Off,
-            1 => BarFour::On,
-            2 => BarFour::Oner,
-            3 => BarFour::Onest,
-            _ => BarFour::_Other(self.four_raw()),
-        }
+        signal.into()
     }
 
     /// Get raw value of Four
@@ -520,12 +506,7 @@ impl Bar {
     #[inline(always)]
     pub fn xtype(&self) -> BarType {
         let signal = self.raw.view_bits::<Msb0>()[25..26].load_be::<u8>();
-
-        match signal {
-            0 => BarType::X0off,
-            1 => BarType::X1on,
-            _ => BarType::_Other(self.xtype_raw()),
-        }
+        signal.into()
     }
 
     /// Get raw value of Type
@@ -646,21 +627,35 @@ impl<'a> Arbitrary<'a> for Bar {
 /// Defined values for Three
 #[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
 pub enum BarThree {
-    Off,
-    On,
-    Oner,
-    Onest,
+    OffX0,
+    OnX1,
+    OnX2,
+    OnestX3,
     _Other(u8),
 }
 
 impl From<BarThree> for u8 {
+    #[inline(always)]
     fn from(val: BarThree) -> u8 {
         match val {
-            BarThree::Off => 0,
-            BarThree::On => 1,
-            BarThree::Oner => 2,
-            BarThree::Onest => 3,
+            BarThree::OffX0 => 0,
+            BarThree::OnX1 => 1,
+            BarThree::OnX2 => 2,
+            BarThree::OnestX3 => 3,
             BarThree::_Other(x) => x,
+        }
+    }
+}
+
+impl From<u8> for BarThree {
+    #[inline(always)]
+    fn from(val: u8) -> BarThree {
+        match val {
+            0 => BarThree::OffX0,
+            1 => BarThree::OnX1,
+            2 => BarThree::OnX2,
+            3 => BarThree::OnestX3,
+            x => BarThree::_Other(x),
         }
     }
 }
@@ -676,6 +671,7 @@ pub enum BarFour {
 }
 
 impl From<BarFour> for u8 {
+    #[inline(always)]
     fn from(val: BarFour) -> u8 {
         match val {
             BarFour::Off => 0,
@@ -687,20 +683,45 @@ impl From<BarFour> for u8 {
     }
 }
 
+impl From<u8> for BarFour {
+    #[inline(always)]
+    fn from(val: u8) -> BarFour {
+        match val {
+            0 => BarFour::Off,
+            1 => BarFour::On,
+            2 => BarFour::Oner,
+            3 => BarFour::Onest,
+            x => BarFour::_Other(x),
+        }
+    }
+}
+
 /// Defined values for Type
 #[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
 pub enum BarType {
     X0off,
     X1on,
-    _Other(bool),
+    _Other(u8),
 }
 
-impl From<BarType> for bool {
-    fn from(val: BarType) -> bool {
+impl From<BarType> for u8 {
+    #[inline(always)]
+    fn from(val: BarType) -> u8 {
         match val {
-            BarType::X0off => false,
-            BarType::X1on => true,
+            BarType::X0off => 0,
+            BarType::X1on => 1,
             BarType::_Other(x) => x,
+        }
+    }
+}
+
+impl From<u8> for BarType {
+    #[inline(always)]
+    fn from(val: u8) -> BarType {
+        match val {
+            0 => BarType::X0off,
+            1 => BarType::X1on,
+            x => BarType::_Other(x),
         }
     }
 }
@@ -743,14 +764,7 @@ impl X4wd {
     #[inline(always)]
     pub fn x4drive(&self) -> X4wd4drive {
         let signal = self.raw.view_bits::<Msb0>()[10..13].load_be::<u8>();
-
-        match signal {
-            0 => X4wd4drive::Off,
-            1 => X4wd4drive::X2wd,
-            2 => X4wd4drive::X4wd,
-            3 => X4wd4drive::All,
-            _ => X4wd4drive::_Other(self.x4drive_raw()),
-        }
+        signal.into()
     }
 
     /// Get raw value of _4DRIVE
@@ -874,6 +888,7 @@ pub enum X4wd4drive {
 }
 
 impl From<X4wd4drive> for u8 {
+    #[inline(always)]
     fn from(val: X4wd4drive) -> u8 {
         match val {
             X4wd4drive::Off => 0,
@@ -881,6 +896,19 @@ impl From<X4wd4drive> for u8 {
             X4wd4drive::X4wd => 2,
             X4wd4drive::All => 3,
             X4wd4drive::_Other(x) => x,
+        }
+    }
+}
+
+impl From<u8> for X4wd4drive {
+    #[inline(always)]
+    fn from(val: u8) -> X4wd4drive {
+        match val {
+            0 => X4wd4drive::Off,
+            1 => X4wd4drive::X2wd,
+            2 => X4wd4drive::X4wd,
+            3 => X4wd4drive::All,
+            x => X4wd4drive::_Other(x),
         }
     }
 }
@@ -1268,12 +1296,7 @@ impl Dolor {
     #[inline(always)]
     pub fn one_float(&self) -> DolorOneFloat {
         let signal = self.raw.view_bits::<Msb0>()[7..19].load_be::<u16>();
-
-        match signal {
-            3 => DolorOneFloat::Dolor,
-            5 => DolorOneFloat::Other,
-            _ => DolorOneFloat::_Other(self.one_float_raw()),
-        }
+        signal.into()
     }
 
     /// Get raw value of OneFloat
@@ -1390,15 +1413,27 @@ impl<'a> Arbitrary<'a> for Dolor {
 pub enum DolorOneFloat {
     Dolor,
     Other,
-    _Other(f32),
+    _Other(u16),
 }
 
-impl From<DolorOneFloat> for f32 {
-    fn from(val: DolorOneFloat) -> f32 {
+impl From<DolorOneFloat> for u16 {
+    #[inline(always)]
+    fn from(val: DolorOneFloat) -> u16 {
         match val {
-            DolorOneFloat::Dolor => 3_f32,
-            DolorOneFloat::Other => 5_f32,
+            DolorOneFloat::Dolor => 3,
+            DolorOneFloat::Other => 5,
             DolorOneFloat::_Other(x) => x,
+        }
+    }
+}
+
+impl From<u16> for DolorOneFloat {
+    #[inline(always)]
+    fn from(val: u16) -> DolorOneFloat {
+        match val {
+            3 => DolorOneFloat::Dolor,
+            5 => DolorOneFloat::Other,
+            x => DolorOneFloat::_Other(x),
         }
     }
 }
