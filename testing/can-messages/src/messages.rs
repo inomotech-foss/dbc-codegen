@@ -2161,7 +2161,7 @@ impl IntegerFactorOffset {
     pub const BYTE_WITH_NEGATIVE_OFFSET_MIN: i16 = 0_i16;
     pub const BYTE_WITH_NEGATIVE_OFFSET_MAX: i16 = 255_i16;
     pub const BYTE_WITH_NEGATIVE_MIN_MIN: i16 = -127_i16;
-    pub const BYTE_WITH_NEGATIVE_MIN_MAX: i16 = 127_i16;
+    pub const BYTE_WITH_NEGATIVE_MIN_MAX: i16 = 32767_i16;
 
     /// Construct new IntegerFactorOffset from values
     pub fn new(
@@ -2372,7 +2372,7 @@ impl IntegerFactorOffset {
     /// ByteWithNegativeMin
     ///
     /// - Min: -127
-    /// - Max: 127
+    /// - Max: 32767
     /// - Unit: ""
     /// - Receivers: Vector__XXX
     #[inline(always)]
@@ -2400,7 +2400,7 @@ impl IntegerFactorOffset {
     #[inline(always)]
     pub fn set_byte_with_negative_min(&mut self, value: i16) -> Result<(), CanError> {
         #[allow(unused_comparisons)]
-        if value < -127_i16 || 127_i16 < value {
+        if value < -127_i16 || 32767_i16 < value {
             return Err(CanError::ParameterOutOfRange {
                 message_id: IntegerFactorOffset::MESSAGE_ID,
             });
@@ -2507,7 +2507,7 @@ impl<'a> Arbitrary<'a> for IntegerFactorOffset {
         let byte_with_factor = u.int_in_range(0..=1020)?;
         let byte_with_both = u.int_in_range(16..=526)?;
         let byte_with_negative_offset = u.int_in_range(0..=255)?;
-        let byte_with_negative_min = u.int_in_range(-127..=127)?;
+        let byte_with_negative_min = u.int_in_range(-127..=32767)?;
         IntegerFactorOffset::new(
             byte_with_offset,
             byte_with_factor,

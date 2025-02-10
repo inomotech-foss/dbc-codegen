@@ -305,26 +305,24 @@ fn render_message(mut w: impl Write, config: &Config<'_>, msg: &Message, dbc: &D
         )?;
         writeln!(w)?;
 
-        for signal in msg
-            .signals()
-            .iter()
-            .filter(|sig| signal_to_rust_type(sig) != "bool")
-        {
-            let typ = signal_to_rust_type(signal);
+        for signal in msg.signals().iter() {
+            let rust_ty = signal_to_rust_type(signal);
+            if rust_ty == "bool" {
+                continue;
+            }
+
             writeln!(
                 &mut w,
-                "pub const {sig}_MIN: {typ} = {min}_{typ};",
+                "pub const {sig}_MIN: {rust_ty} = {min}_{rust_ty};",
                 sig = field_name(signal.name()).to_uppercase(),
-                typ = typ,
-                min = signal.min,
+                min = valid_signal_min(signal.min, &rust_ty),
             )?;
 
             writeln!(
                 &mut w,
-                "pub const {sig}_MAX: {typ} = {max}_{typ};",
+                "pub const {sig}_MAX: {rust_ty} = {max}_{rust_ty};",
                 sig = field_name(signal.name()).to_uppercase(),
-                typ = typ,
-                max = signal.max,
+                max = valid_signal_max(signal.max, &rust_ty),
             )?;
         }
         writeln!(w)?;
@@ -488,6 +486,8 @@ fn render_signal(
     dbc: &DBC,
     msg: &Message,
 ) -> Result<()> {
+    let signal_rust_ty = signal_to_rust_type(signal);
+
     writeln!(w, "/// {}", signal.name())?;
     if let Some(comment) = dbc.signal_comment(*msg.message_id(), signal.name()) {
         writeln!(w, "///")?;
@@ -496,8 +496,16 @@ fn render_signal(
         }
     }
     writeln!(w, "///")?;
-    writeln!(w, "/// - Min: {}", signal.min)?;
-    writeln!(w, "/// - Max: {}", signal.max)?;
+    writeln!(
+        w,
+        "/// - Min: {}",
+        valid_signal_min(signal.min, &signal_rust_ty)
+    )?;
+    writeln!(
+        w,
+        "/// - Max: {}",
+        valid_signal_max(signal.max, &signal_rust_ty)
+    )?;
     writeln!(w, "/// - Unit: {:?}", signal.unit())?;
     writeln!(w, "/// - Receivers: {}", signal.receivers().join(", "))?;
     writeln!(w, "#[inline(always)]")?;
@@ -546,9 +554,8 @@ fn render_signal(
     } else {
         writeln!(
             w,
-            "pub fn {}(&self) -> {} {{",
-            field_name(signal.name()),
-            signal_to_rust_type(signal)
+            "pub fn {}(&self) -> {signal_rust_ty} {{",
+            field_name(signal.name())
         )?;
         {
             let mut w = PadAdapter::wrap(&mut w);
@@ -569,9 +576,8 @@ fn render_signal(
     writeln!(w, "#[inline(always)]")?;
     writeln!(
         w,
-        "pub fn {}_raw(&self) -> {} {{",
-        field_name(signal.name()),
-        signal_to_rust_type(signal)
+        "pub fn {}_raw(&self) -> {signal_rust_ty} {{",
+        field_name(signal.name())
     )?;
     {
         let mut w = PadAdapter::wrap(&mut w);
@@ -580,7 +586,7 @@ fn render_signal(
     writeln!(&mut w, "}}")?;
     writeln!(w)?;
 
-    render_set_signal(&mut w, config, signal, msg)?;
+    render_set_signal(&mut w, config, signal, signal_rust_ty.as_str(), msg)?;
 
     Ok(())
 }
@@ -589,6 +595,7 @@ fn render_set_signal(
     mut w: impl Write,
     config: &Config<'_>,
     signal: &Signal,
+    rust_ty: &str,
     msg: &Message,
 ) -> Result<()> {
     writeln!(&mut w, "/// Set value of {}", signal.name())?;
@@ -604,10 +611,9 @@ fn render_set_signal(
 
     writeln!(
         w,
-        "{}fn set_{}(&mut self, value: {}) -> Result<(), CanError> {{",
+        "{}fn set_{}(&mut self, value: {rust_ty}) -> Result<(), CanError> {{",
         visibility,
-        field_name(signal.name()),
-        signal_to_rust_type(signal)
+        field_name(signal.name())
     )?;
 
     {
@@ -622,10 +628,9 @@ fn render_set_signal(
                 writeln!(w, "#[allow(unused_comparisons)]")?;
                 writeln!(
                     w,
-                    r##"if value < {min}_{typ} || {max}_{typ} < value {{"##,
-                    typ = signal_to_rust_type(signal),
-                    min = signal.min(),
-                    max = signal.max(),
+                    r##"if value < {min}_{rust_ty} || {max}_{rust_ty} < value {{"##,
+                    min = valid_signal_min(signal.min, rust_ty),
+                    max = valid_signal_max(signal.max, rust_ty),
                 )?;
                 {
                     let mut w = PadAdapter::wrap(&mut w);
@@ -763,7 +768,7 @@ fn render_multiplexor_signal(
     }
     writeln!(w, "}}")?;
 
-    render_set_signal(&mut w, config, signal, msg)?;
+    render_set_signal(&mut w, config, signal, &signal_rust_ty, msg)?;
 
     let mut multiplexed_signals = BTreeMap::new();
     for signal in msg.signals() {
@@ -1600,7 +1605,8 @@ fn render_arbitrary(mut w: impl Write, config: &Config<'_>, msg: &Message) -> Re
                     w,
                     "let {field_name} = {arbitrary_value};",
                     field_name = field_name(signal.name()),
-                    arbitrary_value = signal_to_arbitrary(signal),
+                    arbitrary_value =
+                        signal_to_arbitrary(signal, signal_to_rust_type(signal).as_str()),
                 )?;
             }
 
@@ -1666,20 +1672,66 @@ fn render_arbitrary_helpers(mut w: impl Write, config: &Config<'_>) -> io::Resul
     Ok(())
 }
 
-fn signal_to_arbitrary(signal: &Signal) -> String {
+fn valid_signal_min(val: f64, rust_ty: &str) -> f64 {
+    val.max(min_value_for_rust_ty(rust_ty))
+}
+
+fn valid_signal_max(val: f64, rust_ty: &str) -> f64 {
+    val.min(max_value_for_rust_ty(rust_ty))
+}
+
+fn min_value_for_rust_ty(ty: &str) -> f64 {
+    match ty {
+        "bool" => 0.0,
+        "u8" => u8::MIN as f64,
+        "u16" => u16::MIN as f64,
+        "u32" => u32::MIN as f64,
+        "u64" => u64::MIN as f64,
+        "u128" => u128::MIN as f64,
+        "i8" => i8::MIN as f64,
+        "i16" => i16::MIN as f64,
+        "i32" => i32::MIN as f64,
+        "i64" => i64::MIN as f64,
+        "i128" => i128::MIN as f64,
+        "f32" => f32::MIN as f64,
+        "f64" => f64::MIN,
+        _ => unreachable!("unknown type: {ty}"),
+    }
+}
+
+fn max_value_for_rust_ty(ty: &str) -> f64 {
+    match ty {
+        "bool" => 1.0,
+        "u8" => u8::MAX as f64,
+        "u16" => u16::MAX as f64,
+        "u32" => u32::MAX as f64,
+        "u64" => u64::MAX as f64,
+        "u128" => u128::MAX as f64,
+        "i8" => i8::MAX as f64,
+        "i16" => i16::MAX as f64,
+        "i32" => i32::MAX as f64,
+        "i64" => i64::MAX as f64,
+        "i128" => i128::MAX as f64,
+        "f32" => f32::MAX as f64,
+        "f64" => f64::MAX,
+        _ => unreachable!("unknown type: {ty}"),
+    }
+}
+
+fn signal_to_arbitrary(signal: &Signal, rust_ty: &str) -> String {
     if signal.signal_size == 1 {
         "u.int_in_range(0..=1)? == 1".to_string()
     } else if signal_is_float_in_rust(signal) {
         format!(
             "u.float_in_range({min}_f32..={max}_f32)?",
-            min = signal.min(),
-            max = signal.max()
+            min = valid_signal_min(signal.min, rust_ty),
+            max = valid_signal_max(signal.max, rust_ty)
         )
     } else {
         format!(
             "u.int_in_range({min}..={max})?",
-            min = signal.min(),
-            max = signal.max()
+            min = valid_signal_min(signal.min, rust_ty),
+            max = valid_signal_max(signal.max, rust_ty)
         )
     }
 }
