@@ -501,7 +501,10 @@ fn render_signal(
     writeln!(w, "/// - Unit: {:?}", signal.unit())?;
     writeln!(w, "/// - Receivers: {}", signal.receivers().join(", "))?;
     writeln!(w, "#[inline(always)]")?;
-    if dbc.value_descriptions_for_signal(*msg.message_id(), signal.name()).is_some() {
+    if dbc
+        .value_descriptions_for_signal(*msg.message_id(), signal.name())
+        .is_some()
+    {
         let type_name = enum_name(msg, signal);
 
         writeln!(
@@ -616,6 +619,7 @@ fn render_set_signal(
             }
 
             if let FeatureConfig::Gated(..) | FeatureConfig::Always = config.check_ranges {
+                writeln!(w, "#[allow(unused_comparisons)]")?;
                 writeln!(
                     w,
                     r##"if value < {min}_{typ} || {max}_{typ} < value {{"##,
@@ -648,6 +652,7 @@ fn render_set_signal_multiplexer(
     multiplexor: &Signal,
     msg: &Message,
     switch_index: u64,
+    switch_value: &str,
 ) -> Result<()> {
     writeln!(&mut w, "/// Set value of {}", multiplexor.name())?;
     writeln!(w, "#[inline(always)]")?;
@@ -666,9 +671,8 @@ fn render_set_signal_multiplexer(
         writeln!(&mut w, "self.raw = b0.bitor(b1).into_inner();")?;
         writeln!(
             &mut w,
-            "self.set_{}({})?;",
+            "self.set_{}({switch_value})?;",
             field_name(multiplexor.name()),
-            switch_index
         )?;
         writeln!(&mut w, "Ok(())",)?;
     }
@@ -685,6 +689,8 @@ fn render_multiplexor_signal(
     signal: &Signal,
     msg: &Message,
 ) -> Result<()> {
+    let signal_rust_ty = signal_to_rust_type(signal);
+
     writeln!(w, "/// Get raw value of {}", signal.name())?;
     writeln!(w, "///")?;
     writeln!(w, "/// - Start bit: {}", signal.start_bit)?;
@@ -696,9 +702,8 @@ fn render_multiplexor_signal(
     writeln!(w, "#[inline(always)]")?;
     writeln!(
         w,
-        "pub fn {}_raw(&self) -> {} {{",
-        field_name(signal.name()),
-        signal_to_rust_type(signal)
+        "pub fn {}_raw(&self) -> {signal_rust_ty} {{",
+        field_name(signal.name())
     )?;
     {
         let mut w = PadAdapter::wrap(&mut w);
@@ -714,18 +719,22 @@ fn render_multiplexor_signal(
         multiplex_enum_name(msg, signal)?
     )?;
 
-    let multiplexer_indexes: BTreeSet<u64> = msg
+    let muxes = msg
         .signals()
         .iter()
         .filter_map(|s| {
-            if let MultiplexIndicator::MultiplexedSignal(index) = s.multiplexer_indicator() {
-                Some(index)
+            if let MultiplexIndicator::MultiplexedSignal(mux_idx) = s.multiplexer_indicator() {
+                let mux_value = if matches!(signal_rust_ty.as_str(), "bool") {
+                    (*mux_idx == 1).to_string()
+                } else {
+                    mux_idx.to_string()
+                };
+                Some((*mux_idx, mux_value))
             } else {
                 None
             }
         })
-        .cloned()
-        .collect();
+        .collect::<BTreeSet<_>>();
 
     {
         let mut w = PadAdapter::wrap(&mut w);
@@ -733,15 +742,14 @@ fn render_multiplexor_signal(
 
         {
             let mut w = PadAdapter::wrap(&mut w);
-            for multiplexer_index in multiplexer_indexes.iter() {
+            for (mux_idx, mux_value) in muxes.iter() {
                 writeln!(
                     &mut w,
-                    "{idx} => Ok({enum_name}::{multiplexed_wrapper_name}({multiplexed_name}{{ raw: self.raw }})),",
-                    idx = multiplexer_index,
+                    "{mux_value} => Ok({enum_name}::{multiplexed_wrapper_name}({multiplexed_name}{{ raw: self.raw }})),",
                     enum_name = multiplex_enum_name(msg, signal)?,
-                    multiplexed_wrapper_name = multiplexed_enum_variant_wrapper_name(*multiplexer_index),
+                    multiplexed_wrapper_name = multiplexed_enum_variant_wrapper_name(*mux_idx),
                     multiplexed_name =
-                        multiplexed_enum_variant_name(msg, signal, *multiplexer_index)?
+                        multiplexed_enum_variant_name(msg, signal, *mux_idx)?
                 )?;
             }
             writeln!(
@@ -768,8 +776,8 @@ fn render_multiplexor_signal(
         }
     }
 
-    for switch_index in multiplexer_indexes {
-        render_set_signal_multiplexer(&mut w, signal, msg, switch_index)?;
+    for (mux_idx, mux_value) in muxes.iter() {
+        render_set_signal_multiplexer(&mut w, signal, msg, *mux_idx, mux_value)?;
     }
 
     Ok(())
@@ -972,8 +980,12 @@ fn write_enum(
     let type_name = enum_name(msg, signal);
     let signal_rust_type = signal_to_rust_uint(signal);
 
-    let mut variant_names = variants.iter().map(|desc| enum_variant_name(desc.b())).collect::<Box<[_]>>();
-    let has_duplicate_variant_names = (1..variant_names.len()).any(|i| variant_names[i..].contains(&variant_names[i - 1]));
+    let mut variant_names = variants
+        .iter()
+        .map(|desc| enum_variant_name(desc.b()))
+        .collect::<Box<[_]>>();
+    let has_duplicate_variant_names =
+        (1..variant_names.len()).any(|i| variant_names[i..].contains(&variant_names[i - 1]));
     if has_duplicate_variant_names {
         use std::fmt::Write;
 
@@ -1010,7 +1022,6 @@ fn write_enum(
     writeln!(w, "}}")?;
     writeln!(w)?;
 
-
     let match_on_raw_type = match signal_rust_type.as_str() {
         "bool" => |x: f64| format!("{}", (x as i64) == 1),
         "f32" => |x: f64| format!("{}_f32", x),
@@ -1028,12 +1039,9 @@ fn write_enum(
             writeln!(&mut w, "match val {{")?;
             {
                 let mut w = PadAdapter::wrap(&mut w);
-                for (desc,name) in variants.iter().zip(variant_names.iter()) {
+                for (desc, name) in variants.iter().zip(variant_names.iter()) {
                     let literal = match_on_raw_type(*desc.a());
-                    writeln!(
-                        &mut w,
-                        "{type_name}::{name} => {literal},"
-                    )?;
+                    writeln!(&mut w, "{type_name}::{name} => {literal},")?;
                 }
                 writeln!(&mut w, "{}::_Other(x) => x,", type_name,)?;
             }
@@ -1046,7 +1054,6 @@ fn write_enum(
 
     writeln!(w, "impl From<{signal_rust_type}> for {type_name} {{")?;
     {
-
         let mut w = PadAdapter::wrap(&mut w);
         writeln!(w, "#[inline(always)]")?;
         writeln!(w, "fn from(val: {signal_rust_type}) -> {type_name} {{")?;
@@ -1056,12 +1063,9 @@ fn write_enum(
             writeln!(&mut w, "match val {{")?;
             {
                 let mut w = PadAdapter::wrap(&mut w);
-                for (desc,name) in variants.iter().zip(variant_names.iter()) {
+                for (desc, name) in variants.iter().zip(variant_names.iter()) {
                     let literal = match_on_raw_type(*desc.a());
-                    writeln!(
-                        &mut w,
-                        "{literal} => {type_name}::{name},"
-                    )?;
+                    writeln!(&mut w, "{literal} => {type_name}::{name},")?;
                 }
                 writeln!(&mut w, "x => {type_name}::_Other(x),")?;
             }
