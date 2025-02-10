@@ -972,7 +972,7 @@ fn write_enum(
     let type_name = enum_name(msg, signal);
     let signal_rust_type = signal_to_rust_uint(signal);
 
-    let mut variant_names = variants.iter().map(|desc| enum_variant_name(desc.b())).collect::<Box<_>>();
+    let mut variant_names = variants.iter().map(|desc| enum_variant_name(desc.b())).collect::<Box<[_]>>();
     let has_duplicate_variant_names = (1..variant_names.len()).any(|i| variant_names[i..].contains(&variant_names[i - 1]));
     if has_duplicate_variant_names {
         use std::fmt::Write;
