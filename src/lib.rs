@@ -1692,8 +1692,10 @@ fn bounds_for_rust_ty(ty: &str) -> (f64, f64) {
         "f32" => (f32::MIN as f64, f32::MAX as f64),
         "f64" => (f64::MIN, f64::MAX),
         // these types are generally too large for f64. We manually hard code the values so they get rounded towards 0.
-        "u64" | "u128" => (0.0, 18446744073709551615.0),
-        "i64" | "i128" => (-9223372036854775808.0, 9223372036854775807.0),
+        "u64" => (0.0, 1.844674407370955e19),
+        "u128" => (0.0, 3.402823669209385e38),
+        "i64" => (-9.223372036854776e18, 9.223372036854775e18),
+        "i128" => (-1.7014118346046923e38, 1.7014118346046923e38),
         _ => unreachable!("unknown type: {ty}"),
     }
 }
