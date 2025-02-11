@@ -1673,47 +1673,27 @@ fn render_arbitrary_helpers(mut w: impl Write, config: &Config<'_>) -> io::Resul
 }
 
 fn valid_signal_min(val: f64, rust_ty: &str) -> f64 {
-    val.max(min_value_for_rust_ty(rust_ty))
+    val.max(bounds_for_rust_ty(rust_ty).0)
 }
 
 fn valid_signal_max(val: f64, rust_ty: &str) -> f64 {
-    val.min(max_value_for_rust_ty(rust_ty))
+    val.min(bounds_for_rust_ty(rust_ty).1)
 }
 
-fn min_value_for_rust_ty(ty: &str) -> f64 {
+fn bounds_for_rust_ty(ty: &str) -> (f64, f64) {
     match ty {
-        "bool" => 0.0,
-        "u8" => u8::MIN as f64,
-        "u16" => u16::MIN as f64,
-        "u32" => u32::MIN as f64,
-        "u64" => u64::MIN as f64,
-        "u128" => u128::MIN as f64,
-        "i8" => i8::MIN as f64,
-        "i16" => i16::MIN as f64,
-        "i32" => i32::MIN as f64,
-        "i64" => i64::MIN as f64,
-        "i128" => i128::MIN as f64,
-        "f32" => f32::MIN as f64,
-        "f64" => f64::MIN,
-        _ => unreachable!("unknown type: {ty}"),
-    }
-}
-
-fn max_value_for_rust_ty(ty: &str) -> f64 {
-    match ty {
-        "bool" => 1.0,
-        "u8" => u8::MAX as f64,
-        "u16" => u16::MAX as f64,
-        "u32" => u32::MAX as f64,
-        "u64" => u64::MAX as f64,
-        "u128" => u128::MAX as f64,
-        "i8" => i8::MAX as f64,
-        "i16" => i16::MAX as f64,
-        "i32" => i32::MAX as f64,
-        "i64" => i64::MAX as f64,
-        "i128" => i128::MAX as f64,
-        "f32" => f32::MAX as f64,
-        "f64" => f64::MAX,
+        "bool" => (0.0, 1.0),
+        "u8" => (u8::MIN as f64, u8::MAX as f64),
+        "u16" => (u16::MIN as f64, u16::MAX as f64),
+        "u32" => (u32::MIN as f64, u32::MAX as f64),
+        "i8" => (i8::MIN as f64, i8::MAX as f64),
+        "i16" => (i16::MIN as f64, i16::MAX as f64),
+        "i32" => (i32::MIN as f64, i32::MAX as f64),
+        "f32" => (f32::MIN as f64, f32::MAX as f64),
+        "f64" => (f64::MIN, f64::MAX),
+        // these types are generally too large for f64. We manually hard code the values so they get rounded towards 0.
+        "u64" | "u128" => (0.0, 18446744073709551615.0),
+        "i64" | "i128" => (-9223372036854775808.0, 9223372036854775807.0),
         _ => unreachable!("unknown type: {ty}"),
     }
 }
